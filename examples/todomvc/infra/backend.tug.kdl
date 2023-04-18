@@ -1,0 +1,9 @@
+image "backend" reference="localhost/todomvc-backend:latest" local=true // notice the local=true!
+
+container "backend" {
+    image "backend"
+    network "nginx" {
+        alias "backend.local"
+    }
+    network "redis"
+}

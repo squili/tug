@@ -1,0 +1,27 @@
+[package]
+name = "tug"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-compat = "0.2.1"
+async-recursion = "1.0.4"
+async-tar = "0.4.2"
+base64 = "0.21.0"
+clap = { version = "4.2.2", features = ["derive"] }
+dirs = "5.0.0"
+figment = { version = "0.10.8", features = ["toml", "env"] }
+futures-util = "0.3.28"
+hyper = "0.14.26"
+knuffel = "3.0.0"
+maplit = "1.0.2"
+miette = { version = "5.7.0", features = ["fancy"] }
+parking_lot = "0.12.1"
+podman-api = "0.10.0"
+rmp-serde = "1.1.1"
+serde = { version = "1.0.160", features = ["derive"] }
+shlex = "1.1.0"
+thiserror = "1.0.40"
+tokio = { version = "1.27.0", features = ["net", "macros", "rt", "fs", "io-util"] }
+url = { version = "2.3.1", features = ["serde"] }
+walkdir = "2.3.3"

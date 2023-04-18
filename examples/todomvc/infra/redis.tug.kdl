@@ -1,0 +1,17 @@
+image "redis" reference="docker.io/library/redis:7.0-alpine"
+
+network "redis" {
+    dns-enabled
+}
+
+volume "redis-data"
+
+container "redis" {
+    image "redis"
+    command "redis-server /etc/redis/redis.conf"
+    network "redis" {
+        alias "redis.local"
+    }
+    mount type="volume" name="redis-data" destination="/data"
+    inject at="/etc/redis" path="redis.conf"
+}

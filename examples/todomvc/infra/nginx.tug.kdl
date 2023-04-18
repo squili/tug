@@ -1,0 +1,16 @@
+image "nginx" reference="docker.io/library/nginx:1.24.0-alpine"
+
+network "nginx" {
+    dns-enabled
+    // note: enabling internal here makes requests take 3 seconds to resolve
+    // i have no clue why
+    // as an offering to the gods, i have left this with a route to the outside world
+}
+
+container "nginx" {
+    image "nginx"
+    network "nginx"
+    inject at="/etc/nginx/conf.d" path="nginx" // inject configuration
+    inject at="/www" path="../frontend/dist" // inject frontend
+    port container=80 host=8080
+}
