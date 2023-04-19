@@ -83,11 +83,7 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
             &action.networks,
             &first_container_inspect.network_settings.unwrap().networks.unwrap_or_default(),
         )
-        && dbg!(check_mount_mappings(
-            ctx,
-            &action.mounts,
-            &first_container_inspect.mounts.unwrap_or_default()
-        ))
+        && check_mount_mappings(ctx, &action.mounts, &first_container_inspect.mounts.unwrap_or_default())
     {
         let labels = first_container.labels.clone().unwrap_or_default();
 
@@ -334,9 +330,9 @@ fn check_mount_mappings(ctx: &StepContext, expected: &[ContainerActionMount], ac
     for definition in expected {
         let volume = ctx.resolved_volumes.lock()[&definition.name_ref].clone();
         let index = match actual.iter().enumerate().find(|(_, mount)| {
-            dbg!(mount.destination.as_ref() == Some(&definition.destination))
-                && dbg!(dbg!(mount.name.as_ref()) == Some(dbg!(&volume)))
-                && dbg!(mount.destination.as_ref() == Some(&definition.destination))
+            mount.destination.as_ref() == Some(&definition.destination)
+                && mount.name.as_ref() == Some(&volume)
+                && mount.destination.as_ref() == Some(&definition.destination)
         }) {
             Some((index, _)) => index,
             None => {
