@@ -6,7 +6,7 @@ which containers all the tug definition files.
 
 You will need to build some stuff! Make sure you have `node` (I'm sorry) and
 `pnpm` installed. Go into the `frontend` directory and run
-`VITE_BASE=http://localhost:8080 pnpm build` to build the website. Next, go
+`VITE_BASE=http://localhost:8080/api/ pnpm build` to build the website. Next, go
 into the `backend` directory and run `podman build -t todomvc-backend .` to
 build the image. You'll need to get this image onto the target node somehow.
 Good luck. For me, my development machine is also my node, so it was fairly

@@ -121,6 +121,10 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
         }
 
         if inject_names_match && inject_fingerprints_match {
+            if first_container.status.as_deref() != Some("running") {
+                let container = ctx.service.containers().get(first_container.id.as_ref().unwrap());
+                container.start(None).await.d()?;
+            }
             return Ok(());
         }
     }
