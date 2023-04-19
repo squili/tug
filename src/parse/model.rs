@@ -23,7 +23,7 @@ pub struct ParsedImage {
     #[knuffel(argument)]
     pub name: Spanned<String, ParseSpan>,
     #[knuffel(property)]
-    pub reference: String,
+    pub reference: Spanned<String, ParseSpan>,
     #[knuffel(property, default)]
     pub local: bool,
 }

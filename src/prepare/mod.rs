@@ -1,4 +1,4 @@
-mod diagnostics;
+pub mod diagnostics;
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -42,7 +42,8 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
             Action::Image(ImageAction {
                 resolved,
                 name: image.name.to_string(),
-                reference: image.reference.clone(),
+                reference: image.reference.to_string(),
+                reference_span: image.reference.span().clone(),
                 local: image.local,
             }),
             BTreeSet::new(),

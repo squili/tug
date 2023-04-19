@@ -10,6 +10,7 @@ use async_compat::CompatExt;
 use async_recursion::async_recursion;
 use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
 use maplit::hashmap;
+use miette::Context;
 use podman_api::{
     models::{InspectAdditionalNetwork, InspectMount, ListContainer, NamedVolume, Namespace, PortMapping},
     opts::{ContainerCreateOpts, ContainerListFilter, ContainerListOpts},
@@ -111,7 +112,9 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
         if let Some(injects) = &injects {
             if inject_names_match {
                 for inject in &action.injects {
-                    let (updated_fingerprint, bad) = fingerprint(ctx, inject, injects.get(inject.at.deref())).await?;
+                    let (updated_fingerprint, bad) = fingerprint(ctx, inject, injects.get(inject.at.deref()))
+                        .await
+                        .wrap_err("pre-computing inject fingerprint")?;
                     fingerprint_cache.insert(inject.at.deref().clone(), updated_fingerprint);
                     if bad {
                         inject_fingerprints_match = false;
@@ -163,7 +166,13 @@ async fn create_container(
     let mut inject_fingerprints = fingerprint_cache;
     for inject in &action.injects {
         if !inject_fingerprints.contains_key(inject.at.deref()) {
-            inject_fingerprints.insert(inject.at.deref().clone(), fingerprint(ctx, inject, None).await?.0);
+            inject_fingerprints.insert(
+                inject.at.deref().clone(),
+                fingerprint(ctx, inject, None)
+                    .await
+                    .wrap_err_with(|| format!("calculating fingerprint inline for {inject:?}"))?
+                    .0,
+            );
         }
     }
     let inject_fingerprints = BASE64_URL_SAFE_NO_PAD.encode(rmp_serde::to_vec(&inject_fingerprints).d()?);
@@ -187,9 +196,12 @@ async fn create_container(
             value: None,
         })
         .networks(action.networks.iter().map(|network| {
-            (ctx.resolved_networks.lock()[&network.resolved].to_string(), hashmap! {
-                "aliases" => network.aliases.clone()
-            })
+            (
+                ctx.resolved_networks.lock()[&network.resolved].to_string(),
+                hashmap! {
+                    "aliases" => network.aliases.clone()
+                },
+            )
         }));
 
     let mut volumes = Vec::new();
@@ -348,7 +360,10 @@ async fn fingerprint(
 
 #[async_recursion]
 async fn compute_node(at: &Path, compare: &Option<&InjectNode>) -> miette::Result<(InjectNode, bool)> {
-    let meta = tokio::fs::metadata(&at).await.d()?;
+    let meta = tokio::fs::metadata(&at)
+        .await
+        .d()
+        .wrap_err_with(|| format!("checking metadata for file at {at:?}"))?;
     if meta.is_dir() {
         let mut bad = !matches!(compare, Some(InjectNode::Directory(_)));
         let mut contents = HashMap::new();

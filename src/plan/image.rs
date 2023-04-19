@@ -1,17 +1,19 @@
 use futures_util::TryStreamExt;
+use miette::{NamedSource, SourceSpan};
 use podman_api::{
     opts::{ImageListFilter, ImageListOpts, PullOpts},
     Id,
 };
 
 use super::StepContext;
-use crate::utils::IntoDiagnosticShorthand;
+use crate::{parse::span::ParseSpan, utils::IntoDiagnosticShorthand};
 
 #[derive(Clone, Debug)]
 pub struct ImageAction {
     pub resolved: ResolvedImageRef,
     pub name: String,
     pub reference: String,
+    pub reference_span: ParseSpan,
     pub local: bool,
 }
 
@@ -47,6 +49,15 @@ pub async fn execute(ctx: &StepContext, action: ImageAction) -> miette::Result<(
         return Ok(());
     }
 
+    if action.local {
+        Err(ImageNotFound {
+            name: action.reference.clone(),
+            content: crate::prepare::diagnostics::read_source(&action.reference_span)?,
+            reference: action.reference_span.source_span(),
+            help: "images marked as local don't get automatically pulled",
+        })?;
+    }
+
     let mut stream = image_service.pull(&PullOpts::builder().reference(action.reference.clone()).build());
 
     while let Some(report) = stream.try_next().await.d()? {
@@ -61,4 +72,16 @@ pub async fn execute(ctx: &StepContext, action: ImageAction) -> miette::Result<(
     }
 
     Err(miette::miette!("image stream completed without resolved id"))
+}
+
+#[derive(miette::Diagnostic, thiserror::Error, Debug)]
+#[error("image `{name}` not found")]
+struct ImageNotFound {
+    name: String,
+    #[source_code]
+    content: NamedSource,
+    #[label("referenced here")]
+    reference: SourceSpan,
+    #[help]
+    help: &'static str,
 }
