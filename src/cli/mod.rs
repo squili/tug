@@ -1,5 +1,6 @@
 mod debug;
 mod down;
+mod push;
 mod query;
 mod sync;
 
@@ -17,6 +18,7 @@ pub struct Args {
 pub enum Subcommand {
     Debug(debug::Args),
     Down(down::Args),
+    Push(push::Args),
     Query(query::Args),
     Sync(sync::Args),
 }
@@ -26,6 +28,7 @@ impl Args {
         match self.subcommand {
             Subcommand::Debug(args) => args.execute(config, logger).await,
             Subcommand::Down(args) => args.execute(config, logger).await,
+            Subcommand::Push(args) => args.execute(config, logger).await,
             Subcommand::Query(args) => args.execute(config, logger).await,
             Subcommand::Sync(args) => args.execute(config, logger).await,
         }
