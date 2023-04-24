@@ -15,7 +15,7 @@ impl Args {
         let mut executor = Executor::new();
         crate::prepare::prepare(&logger, document, &mut executor)?;
         let service = config.service(&logger, false).await?;
-        logger.log("Starting executor");
+        logger.log("Executing plan");
         executor.execute(&config, &logger, service, &self.directory).await?;
         logger.log("Done!");
 

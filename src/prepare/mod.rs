@@ -20,6 +20,8 @@ use crate::{
 };
 
 pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executor) -> miette::Result<()> {
+    logger.log("Preparing plan");
+
     logger.log("Queueing garbage pass");
     executor.new_step(
         Action::Garbage(GarbageAction {
