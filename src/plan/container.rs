@@ -1,6 +1,5 @@
 use std::{
     collections::{hash_map::RandomState, hash_set::SymmetricDifference, HashMap, HashSet},
-    ffi::OsString,
     ops::Deref,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -18,7 +17,10 @@ use podman_api::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{image::ResolvedImageRef, network::ResolvedNetworkRef, volume::ResolvedVolumeRef, PostAction, StepContext};
+use super::{
+    image::ResolvedImageRef, network::ResolvedNetworkRef, secret::ResolvedSecretRef, volume::ResolvedVolumeRef, PostAction,
+    StepContext,
+};
 use crate::{
     parse::model::{ParsedContainerInject, ParsedContainerMountType, ParsedProtocol},
     utils::{BodyWriter, IntoDiagnosticShorthand, XTug},
@@ -33,6 +35,7 @@ pub struct ContainerAction {
     pub injects: Vec<ParsedContainerInject>,
     pub networks: Vec<ContainerActionNetwork>,
     pub mounts: Vec<ContainerActionMount>,
+    pub secrets: Vec<ContainerActionSecret>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,13 +58,22 @@ pub struct ContainerActionMount {
     pub destination: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ContainerActionSecret {
+    pub name_ref: ResolvedSecretRef,
+    pub target: String,
+}
+
 pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Result<()> {
     let mut fingerprint_cache = HashMap::new();
+    let mut secret_fulls = None;
 
     let remote_containers = remote_containers_query(&ctx.service, ctx.group.clone(), action.name.clone()).await?;
 
     if remote_containers.is_empty() {
-        create_container(ctx, &action, fingerprint_cache).await?;
+        create_container(ctx, &action, fingerprint_cache, secret_fulls)
+            .await
+            .wrap_err("creating container")?;
         return Ok(());
     }
 
@@ -84,6 +96,7 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
             &first_container_inspect.network_settings.unwrap().networks.unwrap_or_default(),
         )
         && check_mount_mappings(ctx, &action.mounts, &first_container_inspect.mounts.unwrap_or_default())
+    // todo: secret sync check
     {
         let labels = first_container.labels.clone().unwrap_or_default();
 
@@ -108,7 +121,7 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
         if let Some(injects) = &injects {
             if inject_names_match {
                 for inject in &action.injects {
-                    let (updated_fingerprint, bad) = fingerprint(ctx, inject, injects.get(inject.at.deref()))
+                    let (updated_fingerprint, bad) = inject_fingerprint(ctx, inject, injects.get(inject.at.deref()))
                         .await
                         .wrap_err("pre-computing inject fingerprint")?;
                     fingerprint_cache.insert(inject.at.deref().clone(), updated_fingerprint);
@@ -120,10 +133,32 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
             }
         }
 
-        if inject_names_match && inject_fingerprints_match {
-            if first_container.status.as_deref() != Some("running") {
-                let container = ctx.service.containers().get(first_container.id.as_ref().unwrap());
-                container.start(None).await.d()?;
+        let mut secret_fingerprint_matches = true;
+        let existing_fingerprint = labels
+            .get(XTug::SecretFingerprint.as_ref())
+            .and_then(|compare| BASE64_URL_SAFE_NO_PAD.decode(compare).ok())
+            .and_then(|compare| rmp_serde::from_slice::<Vec<SecretFingerprint>>(&compare).ok());
+        match (existing_fingerprint, action.secrets.is_empty()) {
+            (None, true) => {}
+            (None, false) | (Some(_), true) => {
+                secret_fingerprint_matches = false;
+            }
+            (Some(remote_fingerprint), false) => {
+                let (fulls, bad) = secret_fingerprint(ctx, &action.secrets, Some(&remote_fingerprint)).await?;
+                secret_fulls = Some(fulls);
+                secret_fingerprint_matches = !bad;
+            }
+        }
+
+        if inject_names_match && inject_fingerprints_match && secret_fingerprint_matches {
+            if first_container.state.as_deref() != Some("running") {
+                let id = first_container.id.as_ref().unwrap();
+                let container = ctx.service.containers().get(id);
+                container
+                    .start(None)
+                    .await
+                    .d()
+                    .wrap_err_with(|| format!("starting container {id}"))?;
             }
             return Ok(());
         }
@@ -137,7 +172,9 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
         ctx.finalize.lock().push(PostAction::DeleteContainer { id });
     }
 
-    create_container(ctx, &action, fingerprint_cache).await?;
+    create_container(ctx, &action, fingerprint_cache, secret_fulls)
+        .await
+        .wrap_err("creating container")?;
 
     Ok(())
 }
@@ -161,6 +198,7 @@ async fn create_container(
     ctx: &StepContext,
     action: &ContainerAction,
     fingerprint_cache: HashMap<PathBuf, InjectNode>,
+    secret_fulls: Option<Vec<FullSecret>>,
 ) -> miette::Result<()> {
     let image = ctx.resolved_images.lock()[&action.image].to_string();
     let mut inject_fingerprints = fingerprint_cache;
@@ -168,7 +206,7 @@ async fn create_container(
         if !inject_fingerprints.contains_key(inject.at.deref()) {
             inject_fingerprints.insert(
                 inject.at.deref().clone(),
-                fingerprint(ctx, inject, None)
+                inject_fingerprint(ctx, inject, None)
                     .await
                     .wrap_err_with(|| format!("calculating fingerprint inline for {inject:?}"))?
                     .0,
@@ -179,11 +217,6 @@ async fn create_container(
 
     let mut opts = ContainerCreateOpts::builder()
         .image(image)
-        .labels([
-            (XTug::Group.to_string(), ctx.group.clone()),
-            (XTug::Name.to_string(), action.name.to_string()),
-            (XTug::InjectFingerprint.to_string(), inject_fingerprints),
-        ])
         .portmappings(action.ports.iter().map(|port| PortMapping {
             container_port: Some(port.container),
             host_ip: None,
@@ -196,12 +229,9 @@ async fn create_container(
             value: None,
         })
         .networks(action.networks.iter().map(|network| {
-            (
-                ctx.resolved_networks.lock()[&network.resolved].to_string(),
-                hashmap! {
-                    "aliases" => network.aliases.clone()
-                },
-            )
+            (ctx.resolved_networks.lock()[&network.resolved].to_string(), hashmap! {
+                "aliases" => network.aliases.clone()
+            })
         }));
 
     let mut volumes = Vec::new();
@@ -220,6 +250,25 @@ async fn create_container(
     if let Some(command) = &action.command {
         opts = opts.command(command);
     }
+
+    let secret_fulls = match secret_fulls {
+        Some(s) => s,
+        None => secret_fingerprint(ctx, &action.secrets, None).await?.0,
+    };
+
+    opts = opts.secret_env(
+        secret_fulls
+            .iter()
+            .map(|secret| (secret.target.to_string(), secret.id.clone())),
+    );
+    let print = BASE64_URL_SAFE_NO_PAD.encode(rmp_serde::to_vec(&secret_print_from_fulls(&secret_fulls)).d()?);
+
+    opts = opts.labels([
+        (XTug::Group.to_string(), ctx.group.clone()),
+        (XTug::Name.to_string(), action.name.to_string()),
+        (XTug::InjectFingerprint.to_string(), inject_fingerprints),
+        (XTug::SecretFingerprint.to_string(), print),
+    ]);
 
     let new_container = ctx.service.containers().create(&opts.build()).await.d()?;
     let container = ctx.service.containers().get(&new_container.id);
@@ -286,8 +335,7 @@ fn check_port_mappings(expected: &[ContainerActionPort], actual: &[PortMapping])
         let Some((index, _)) = actual.iter().enumerate().find(|(_, mapping)| {
             mapping.container_port == Some(definition.container)
                 && mapping.host_port == Some(definition.host)
-                && mapping.protocol.as_deref()
-                    == Some(definition.protocol.as_str())
+                && mapping.protocol.as_deref() == Some(definition.protocol.as_str())
         }) else {
             return false;
         };
@@ -349,7 +397,56 @@ fn check_mount_mappings(ctx: &StepContext, expected: &[ContainerActionMount], ac
     actual.is_empty()
 }
 
-async fn fingerprint(
+async fn secret_fingerprint(
+    ctx: &StepContext,
+    secrets: &[ContainerActionSecret],
+    compare: Option<&[SecretFingerprint]>,
+) -> miette::Result<(Vec<FullSecret>, bool)> {
+    let mut fulls = Vec::new();
+    for secret in secrets {
+        let secret_id = ctx.resolved_secrets.lock()[&secret.name_ref].clone();
+        let info = ctx.service.secrets().get(&secret_id).inspect().await.d()?;
+        let updated_at = info.updated_at.unwrap().timestamp();
+        fulls.push(FullSecret {
+            id: secret_id,
+            target: secret.target.clone(),
+            updated_at,
+        });
+    }
+
+    if let Some(compare) = compare {
+        let bad = secret_print_from_fulls(&fulls) != *compare;
+        Ok((fulls, bad))
+    } else {
+        Ok((fulls, true))
+    }
+}
+
+fn secret_print_from_fulls(fulls: &[FullSecret]) -> Vec<SecretFingerprint> {
+    let mut prints = Vec::new();
+    for full in fulls {
+        prints.push(SecretFingerprint {
+            id: full.id.clone(),
+            updated_at: full.updated_at,
+        });
+    }
+    prints.sort_unstable();
+    prints
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+struct SecretFingerprint {
+    id: String,
+    updated_at: i64,
+}
+
+struct FullSecret {
+    id: String,
+    target: String,
+    updated_at: i64,
+}
+
+async fn inject_fingerprint(
     ctx: &StepContext,
     inject: &ParsedContainerInject,
     compare: Option<&InjectNode>,
@@ -369,13 +466,14 @@ async fn compute_node(at: &Path, compare: &Option<&InjectNode>) -> miette::Resul
         let mut contents = HashMap::new();
         let mut entries = tokio::fs::read_dir(at).await.d()?;
         while let Some(entry) = entries.next_entry().await.d()? {
+            let file_name = crate::utils::os_string_vec(entry.file_name());
             let compare = match compare {
-                Some(InjectNode::Directory(map)) => map.get(&entry.file_name()),
+                Some(InjectNode::Directory(map)) => map.get(&file_name),
                 _ => None,
             };
             let (node, recurse_bad) = compute_node(&entry.path(), if bad { &None } else { &compare }).await?;
             bad |= recurse_bad;
-            contents.insert(entry.file_name(), node);
+            contents.insert(file_name, node);
         }
         Ok((InjectNode::Directory(contents), bad))
     } else {
@@ -402,7 +500,7 @@ async fn compute_node(at: &Path, compare: &Option<&InjectNode>) -> miette::Resul
 #[derive(Serialize, Deserialize, Clone)]
 enum InjectNode {
     #[serde(rename = "d")]
-    Directory(HashMap<OsString, InjectNode>),
+    Directory(HashMap<Vec<u8>, InjectNode>),
     #[serde(rename = "f")]
     File {
         #[serde(rename = "m")]

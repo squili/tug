@@ -45,6 +45,8 @@ pub struct ParsedContainer {
     pub networks: Vec<ParsedContainerNetwork>,
     #[knuffel(children(name = "mount"))]
     pub mounts: Vec<ParsedContainerMount>,
+    #[knuffel(children(name = "secret"))]
+    pub secrets: Vec<ParsedContainerSecret>,
 }
 
 #[derive(Debug)]
@@ -137,6 +139,15 @@ pub struct ParsedContainerMount {
 #[knuffel(span_type = LineSpan)]
 pub enum ParsedContainerMountType {
     Volume,
+}
+
+#[derive(knuffel::Decode, Debug, Clone)]
+#[knuffel(span_type = LineSpan)]
+pub struct ParsedContainerSecret {
+    #[knuffel(argument)]
+    pub name: Spanned<String, ParseSpan>,
+    #[knuffel(property)]
+    pub target: Option<String>,
 }
 
 #[derive(knuffel::Decode, Debug)]

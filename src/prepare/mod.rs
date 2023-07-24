@@ -9,10 +9,11 @@ use crate::{
     logger::Logger,
     parse::model::{ParsedContainerPort, ParsedDocument, ParsedExplicitContainerPort, ParsedProtocol},
     plan::{
-        container::{ContainerAction, ContainerActionMount, ContainerActionNetwork, ContainerActionPort},
+        container::{ContainerAction, ContainerActionMount, ContainerActionNetwork, ContainerActionPort, ContainerActionSecret},
         garbage::GarbageAction,
         image::{ImageAction, ResolvedImageRef},
         network::{NetworkAction, ResolvedNetworkRef},
+        secret::{ResolvedSecretRef, SecretAction},
         volume::{ResolvedVolumeRef, VolumeAction},
         Action, Executor,
     },
@@ -113,6 +114,26 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
         .map(|(name, (reference, step, _))| (name, (reference, step)))
         .collect::<HashMap<_, _>>();
 
+    logger.log("Queueing secrets");
+    let mut counter = 1;
+    let mut secret_to_dependency = HashMap::new();
+    for container in &document.containers {
+        for secret in &container.secrets {
+            if !secret_to_dependency.contains_key(secret.name.as_str()) {
+                let resolved = ResolvedSecretRef(counter);
+                counter += 1;
+                let step_id = executor.new_step(
+                    Action::Secret(SecretAction {
+                        resolved,
+                        name: secret.name.clone(),
+                    }),
+                    BTreeSet::new(),
+                );
+                secret_to_dependency.insert(secret.name.to_string(), (resolved, step_id));
+            }
+        }
+    }
+
     logger.log("Queueing containers");
     let mut existing_names = HashMap::new();
     for container in document.containers {
@@ -170,6 +191,19 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
             dependencies.push(*step);
         }
 
+        let mut secrets = Vec::new();
+        for secret in container.secrets {
+            let (reference, step) = match secret_to_dependency.get(secret.name.as_str()) {
+                Some(v) => v,
+                None => return UnknownThing::new(secret.name, "secret"),
+            };
+            secrets.push(ContainerActionSecret {
+                name_ref: *reference,
+                target: secret.target.unwrap_or_else(|| secret.name.to_string()),
+            });
+            dependencies.push(*step);
+        }
+
         let command = if let Some(command) = container.command {
             match shlex::split(&command) {
                 Some(command) => Some(command),
@@ -210,6 +244,7 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
                 injects: container.injects,
                 networks,
                 mounts: volumes,
+                secrets,
             }),
             BTreeSet::from_iter(dependencies),
         );

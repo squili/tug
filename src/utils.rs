@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -16,6 +17,7 @@ pub enum XTug {
     Name,
     Group,
     InjectFingerprint,
+    SecretFingerprint,
 }
 
 impl AsRef<str> for XTug {
@@ -24,6 +26,7 @@ impl AsRef<str> for XTug {
             XTug::Name => "X-Tug-Name",
             XTug::Group => "X-Tug-Group",
             XTug::InjectFingerprint => "X-Tug-Inject-Fingerprint",
+            XTug::SecretFingerprint => "X-Tug-Secret-Fingerprint",
         }
     }
 }
@@ -83,4 +86,15 @@ impl AsyncWrite for BodyWriter {
     fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+}
+
+#[cfg(unix)]
+pub fn os_string_vec(from: OsString) -> Vec<u8> {
+    use std::os::unix::prelude::OsStringExt;
+    from.into_vec()
+}
+
+#[cfg(not(unix))]
+pub fn os_string_vec(from: OsString) -> Vec<u8> {
+    from.to_string_lossy().into_owned().into_bytes()
 }

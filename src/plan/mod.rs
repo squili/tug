@@ -5,6 +5,7 @@ use std::{
 };
 
 use futures_util::future::TryJoinAll;
+use miette::Context;
 use parking_lot::Mutex;
 use podman_api::Podman;
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -14,6 +15,7 @@ use self::{
     garbage::GarbageAction,
     image::{ImageAction, ResolvedImageRef},
     network::{NetworkAction, ResolvedNetworkRef},
+    secret::{ResolvedSecretRef, SecretAction},
     volume::{ResolvedVolumeRef, VolumeAction},
 };
 use crate::{config::Config, logger::Logger, utils::IntoDiagnosticShorthand};
@@ -22,6 +24,7 @@ pub mod container;
 pub mod garbage;
 pub mod image;
 pub mod network;
+pub mod secret;
 pub mod volume;
 
 pub struct Executor {
@@ -87,6 +90,7 @@ impl Executor {
         let resolved_images: Arc<Mutex<BTreeMap<ResolvedImageRef, String>>> = Default::default();
         let resolved_networks: Arc<Mutex<BTreeMap<ResolvedNetworkRef, String>>> = Default::default();
         let resolved_volumes: Arc<Mutex<BTreeMap<ResolvedVolumeRef, String>>> = Default::default();
+        let resolved_secrets: Arc<Mutex<BTreeMap<ResolvedSecretRef, String>>> = Default::default();
 
         logger.trace("Entering main loop");
         loop {
@@ -110,6 +114,7 @@ impl Executor {
                         resolved_images: resolved_images.clone(),
                         resolved_networks: resolved_networks.clone(),
                         resolved_volumes: resolved_volumes.clone(),
+                        resolved_secrets: resolved_secrets.clone(),
                         group: config.group.clone(),
                         root_directory: root_directory.to_path_buf(),
                         backtrack: self.backtrack.clone(),
@@ -212,6 +217,7 @@ pub struct StepContext {
     pub resolved_images: Arc<Mutex<BTreeMap<ResolvedImageRef, String>>>,
     pub resolved_networks: Arc<Mutex<BTreeMap<ResolvedNetworkRef, String>>>,
     pub resolved_volumes: Arc<Mutex<BTreeMap<ResolvedVolumeRef, String>>>,
+    pub resolved_secrets: Arc<Mutex<BTreeMap<ResolvedSecretRef, String>>>,
     pub root_directory: PathBuf,
     pub group: String,
     pub backtrack: Arc<Mutex<Vec<PostAction>>>,
@@ -230,11 +236,12 @@ impl Step {
     pub async fn execute(ctx: StepContext, step: Arc<Mutex<Step>>, completions: mpsc::Sender<(usize, Option<miette::Report>)>) {
         let action = step.lock().action.clone();
         let failure_state = match action {
-            Action::Container(action) => container::execute(&ctx, action).await,
-            Action::Image(action) => image::execute(&ctx, action).await,
-            Action::Garbage(action) => garbage::execute(&ctx, action).await,
-            Action::Network(action) => network::execute(&ctx, action).await,
-            Action::Volume(action) => volume::execute(&ctx, action).await,
+            Action::Container(action) => container::execute(&ctx, action).await.wrap_err("executing container step"),
+            Action::Image(action) => image::execute(&ctx, action).await.wrap_err("executing image step"),
+            Action::Garbage(action) => garbage::execute(&ctx, action).await.wrap_err("executing garbage step"),
+            Action::Network(action) => network::execute(&ctx, action).await.wrap_err("executing network step"),
+            Action::Volume(action) => volume::execute(&ctx, action).await.wrap_err("executing volume step"),
+            Action::Secret(action) => secret::execute(&ctx, action).await.wrap_err("executing secret step"),
         }
         .err();
 
@@ -261,6 +268,7 @@ pub enum Action {
     Garbage(GarbageAction),
     Network(NetworkAction),
     Volume(VolumeAction),
+    Secret(SecretAction),
 }
 
 pub enum PostAction {
