@@ -7,9 +7,12 @@ use miette::NamedSource;
 use self::diagnostics::{read_source, DuplicateInjectPath, DuplicateName, MalformedCommand, UnknownThing};
 use crate::{
     logger::Logger,
-    parse::model::{ParsedContainerPort, ParsedDocument, ParsedExplicitContainerPort, ParsedProtocol},
+    parse::model::{ParsedContainerMount, ParsedContainerPort, ParsedDocument, ParsedExplicitContainerPort, ParsedProtocol},
     plan::{
-        container::{ContainerAction, ContainerActionMount, ContainerActionNetwork, ContainerActionPort, ContainerActionSecret},
+        container::{
+            ContainerAction, ContainerActionBindMount, ContainerActionNetwork, ContainerActionPort, ContainerActionSecret,
+            ContainerActionVolumeMount,
+        },
         garbage::GarbageAction,
         image::{ImageAction, ResolvedImageRef},
         network::{NetworkAction, ResolvedNetworkRef},
@@ -178,17 +181,25 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
         }
 
         let mut volumes = Vec::new();
+        let mut binds = Vec::new();
         for mount in container.mounts {
-            let (reference, step) = match volume_name_to_dependency.get(mount.name.as_str()) {
-                Some(v) => v,
-                None => return UnknownThing::build(mount.name, "volume"),
-            };
-            volumes.push(ContainerActionMount {
-                kind: mount.kind,
-                name_ref: *reference,
-                destination: mount.destination,
-            });
-            dependencies.push(*step);
+            match mount {
+                ParsedContainerMount::Volume(volume) => {
+                    let (reference, step) = match volume_name_to_dependency.get(volume.name.as_str()) {
+                        Some(v) => v,
+                        None => return UnknownThing::build(volume.name, "volume"),
+                    };
+                    volumes.push(ContainerActionVolumeMount {
+                        name_ref: *reference,
+                        destination: volume.destination,
+                    });
+                    dependencies.push(*step);
+                }
+                ParsedContainerMount::Bind(bind) => binds.push(ContainerActionBindMount {
+                    source: bind.source,
+                    destination: bind.destination,
+                }),
+            }
         }
 
         let mut secrets = Vec::new();
@@ -243,8 +254,9 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
                     .collect(),
                 injects: container.injects,
                 networks,
-                mounts: volumes,
+                volumes,
                 secrets,
+                binds,
             }),
             BTreeSet::from_iter(dependencies),
         );

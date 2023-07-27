@@ -47,6 +47,8 @@ pub struct ParsedContainer {
     pub mounts: Vec<ParsedContainerMount>,
     #[knuffel(children(name = "secret"))]
     pub secrets: Vec<ParsedContainerSecret>,
+    #[knuffel(child, unwrap(arguments))]
+    pub after: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -126,19 +128,27 @@ pub struct ParsedContainerNetwork {
 
 #[derive(knuffel::Decode, Debug, Clone)]
 #[knuffel(span_type = LineSpan)]
-pub struct ParsedContainerMount {
-    #[knuffel(property(name = "type"))]
-    pub kind: ParsedContainerMountType,
+pub enum ParsedContainerMount {
+    Volume(ParsedContainerVolumeMount),
+    Bind(ParsedContainerBindMount),
+}
+
+#[derive(knuffel::Decode, Debug, Clone)]
+#[knuffel(span_type = LineSpan)]
+pub struct ParsedContainerVolumeMount {
     #[knuffel(property)]
     pub name: Spanned<String, ParseSpan>,
     #[knuffel(property)]
     pub destination: String,
 }
 
-#[derive(knuffel::DecodeScalar, Debug, Clone)]
+#[derive(knuffel::Decode, Debug, Clone)]
 #[knuffel(span_type = LineSpan)]
-pub enum ParsedContainerMountType {
-    Volume,
+pub struct ParsedContainerBindMount {
+    #[knuffel(property)]
+    pub source: PathBuf,
+    #[knuffel(property)]
+    pub destination: String,
 }
 
 #[derive(knuffel::Decode, Debug, Clone)]

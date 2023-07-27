@@ -2,6 +2,7 @@ use std::{
     collections::{hash_map::RandomState, hash_set::SymmetricDifference, HashMap, HashSet},
     ops::Deref,
     path::{Path, PathBuf},
+    str::FromStr,
     time::SystemTime,
 };
 
@@ -11,7 +12,7 @@ use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
 use maplit::hashmap;
 use miette::Context;
 use podman_api::{
-    models::{InspectAdditionalNetwork, InspectMount, ListContainer, NamedVolume, Namespace, PortMapping},
+    models::{ContainerMount, InspectAdditionalNetwork, InspectMount, ListContainer, NamedVolume, Namespace, PortMapping},
     opts::{ContainerCreateOpts, ContainerListFilter, ContainerListOpts},
     Podman,
 };
@@ -22,7 +23,7 @@ use super::{
     StepContext,
 };
 use crate::{
-    parse::model::{ParsedContainerInject, ParsedContainerMountType, ParsedProtocol},
+    parse::model::{ParsedContainerInject, ParsedProtocol},
     utils::{BodyWriter, IntoDiagnosticShorthand, XTug},
 };
 
@@ -34,8 +35,9 @@ pub struct ContainerAction {
     pub ports: Vec<ContainerActionPort>,
     pub injects: Vec<ParsedContainerInject>,
     pub networks: Vec<ContainerActionNetwork>,
-    pub mounts: Vec<ContainerActionMount>,
+    pub volumes: Vec<ContainerActionVolumeMount>,
     pub secrets: Vec<ContainerActionSecret>,
+    pub binds: Vec<ContainerActionBindMount>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,9 +54,14 @@ pub struct ContainerActionNetwork {
 }
 
 #[derive(Clone, Debug)]
-pub struct ContainerActionMount {
-    pub kind: ParsedContainerMountType,
+pub struct ContainerActionVolumeMount {
     pub name_ref: ResolvedVolumeRef,
+    pub destination: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContainerActionBindMount {
+    pub source: PathBuf,
     pub destination: String,
 }
 
@@ -95,8 +102,12 @@ pub async fn execute(ctx: &StepContext, action: ContainerAction) -> miette::Resu
             &action.networks,
             &first_container_inspect.network_settings.unwrap().networks.unwrap_or_default(),
         )
-        && check_mount_mappings(ctx, &action.mounts, &first_container_inspect.mounts.unwrap_or_default())
-    // todo: secret sync check
+        && check_mount_mappings(
+            ctx,
+            &action.volumes,
+            &action.binds,
+            &first_container_inspect.mounts.unwrap_or_default(),
+        )
     {
         let labels = first_container.labels.clone().unwrap_or_default();
 
@@ -232,20 +243,21 @@ async fn create_container(
             (ctx.resolved_networks.lock()[&network.resolved].to_string(), hashmap! {
                 "aliases" => network.aliases.clone()
             })
-        }));
-
-    let mut volumes = Vec::new();
-    for mount in &action.mounts {
-        let name = ctx.resolved_volumes.lock()[&mount.name_ref].clone();
-        volumes.push(NamedVolume {
-            dest: Some(mount.destination.clone()),
+        }))
+        .volumes(action.volumes.iter().map(|volume| NamedVolume {
+            dest: Some(volume.destination.clone()),
             is_anonymous: Some(false),
-            name: Some(name),
+            name: Some(ctx.resolved_volumes.lock()[&volume.name_ref].clone()),
             options: None,
-        });
-    }
-
-    opts = opts.volumes(volumes);
+        }))
+        .mounts(action.binds.iter().map(|bind| ContainerMount {
+            destination: Some(bind.destination.clone()),
+            options: None,
+            source: Some(bind.source.to_string_lossy().to_string()),
+            _type: Some("bind".to_string()),
+            uid_mappings: None,
+            gid_mappings: None,
+        }));
 
     if let Some(command) = &action.command {
         opts = opts.command(command);
@@ -376,22 +388,39 @@ fn check_network_mappings(
     actual.is_empty()
 }
 
-fn check_mount_mappings(ctx: &StepContext, expected: &[ContainerActionMount], actual: &[InspectMount]) -> bool {
+fn check_mount_mappings(
+    ctx: &StepContext,
+    expected_volumes: &[ContainerActionVolumeMount],
+    expected_binds: &[ContainerActionBindMount],
+    actual: &[InspectMount],
+) -> bool {
     let mut actual = actual.to_vec();
 
-    for definition in expected {
+    for definition in expected_volumes {
         let volume = ctx.resolved_volumes.lock()[&definition.name_ref].clone();
-        let index = match actual.iter().enumerate().find(|(_, mount)| {
-            mount.destination.as_ref() == Some(&definition.destination)
+        match actual.iter().enumerate().find(|(_, mount)| {
+            mount.type_.as_ref().map(|x| x.as_str()) == Some("volume")
                 && mount.name.as_ref() == Some(&volume)
                 && mount.destination.as_ref() == Some(&definition.destination)
         }) {
-            Some((index, _)) => index,
-            None => {
-                return false;
+            Some((index, _)) => {
+                actual.swap_remove(index);
             }
-        };
-        actual.swap_remove(index);
+            None => return false,
+        }
+    }
+
+    for definition in expected_binds {
+        match actual.iter().enumerate().find(|(_, mount)| {
+            mount.type_.as_ref().map(|x| x.as_str()) == Some("bind")
+                && mount.destination.as_ref() == Some(&definition.destination)
+                && mount.source.as_ref().and_then(|x| PathBuf::from_str(&x).ok()).as_ref() == Some(&definition.source)
+        }) {
+            Some((index, _)) => {
+                actual.swap_remove(index);
+            }
+            None => return false,
+        }
     }
 
     actual.is_empty()
