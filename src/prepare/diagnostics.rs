@@ -41,7 +41,7 @@ pub struct UnknownThing {
 }
 
 impl UnknownThing {
-    pub fn new(name_space: Spanned<String, ParseSpan>, what: &'static str) -> miette::Result<()> {
+    pub fn build(name_space: Spanned<String, ParseSpan>, what: &'static str) -> miette::Result<()> {
         let span = name_space.span();
         let content = std::fs::read_to_string(&span.file).d()?;
 

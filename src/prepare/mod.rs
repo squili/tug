@@ -159,7 +159,7 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
 
         let (image_reference, image_step) = match image_name_to_dependency.get(container.image.as_str()) {
             Some(v) => v,
-            None => return UnknownThing::new(container.image, "image"),
+            None => return UnknownThing::build(container.image, "image"),
         };
 
         let mut dependencies = vec![*image_step];
@@ -168,7 +168,7 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
         for network in container.networks {
             let (reference, step) = match network_name_to_dependency.get(network.name.as_str()) {
                 Some(v) => v,
-                None => return UnknownThing::new(network.name, "network"),
+                None => return UnknownThing::build(network.name, "network"),
             };
             networks.push(ContainerActionNetwork {
                 resolved: *reference,
@@ -181,7 +181,7 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
         for mount in container.mounts {
             let (reference, step) = match volume_name_to_dependency.get(mount.name.as_str()) {
                 Some(v) => v,
-                None => return UnknownThing::new(mount.name, "volume"),
+                None => return UnknownThing::build(mount.name, "volume"),
             };
             volumes.push(ContainerActionMount {
                 kind: mount.kind,
@@ -195,7 +195,7 @@ pub fn prepare(logger: &Logger, document: ParsedDocument, executor: &mut Executo
         for secret in container.secrets {
             let (reference, step) = match secret_to_dependency.get(secret.name.as_str()) {
                 Some(v) => v,
-                None => return UnknownThing::new(secret.name, "secret"),
+                None => return UnknownThing::build(secret.name, "secret"),
             };
             secrets.push(ContainerActionSecret {
                 name_ref: *reference,
